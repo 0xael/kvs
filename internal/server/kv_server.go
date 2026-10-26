@@ -4,60 +4,58 @@ package server
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
 	"github.com/alyelalwany/ghostkv/internal/config"
+	"github.com/alyelalwany/ghostkv/internal/coordinator"
 	"github.com/alyelalwany/ghostkv/internal/store"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 // KVServer implements the KVService gRPC interface.
-// For Phase 1 (single-node), it calls the local store directly.
+// For Phase 2, it delegates to the coordinator for request routing.
 type KVServer struct {
 	pb.UnimplementedKVServiceServer
-	store  store.Store
+	coord  *coordinator.Coordinator
+	store  store.Store // still needed for Status (key count)
 	cfg    *config.ClusterConfig
 	nodeID string
 }
 
-// NewKVServer creates a new KVServer.
-func NewKVServer(s store.Store, cfg *config.ClusterConfig, nodeID string) *KVServer {
+// NewKVServer creates a new KVServer that delegates to the given coordinator.
+func NewKVServer(coord *coordinator.Coordinator, s store.Store, cfg *config.ClusterConfig, nodeID string) *KVServer {
 	return &KVServer{
+		coord:  coord,
 		store:  s,
 		cfg:    cfg,
 		nodeID: nodeID,
 	}
 }
 
-// Put stores a key-value pair in the local store.
+// Put stores a key-value pair, routing to the correct node via the coordinator.
 func (s *KVServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
 	if req.GetKey() == "" {
 		return nil, status.Error(codes.InvalidArgument, "key must not be empty")
 	}
 
-	rec := &store.Record{
-		Value:     req.GetValue(),
-		Timestamp: time.Now().UnixNano(),
-	}
-
-	if err := s.store.Put(req.GetKey(), rec); err != nil {
+	acks, err := s.coord.Put(ctx, req.GetKey(), req.GetValue())
+	if err != nil {
 		slog.Error("put failed", "key", req.GetKey(), "error", err)
 		return nil, status.Errorf(codes.Internal, "put failed: %v", err)
 	}
 
-	slog.Debug("put", "key", req.GetKey(), "size", len(req.GetValue()))
-	return &pb.PutResponse{Acks: 1}, nil
+	slog.Debug("put", "key", req.GetKey(), "size", len(req.GetValue()), "acks", acks)
+	return &pb.PutResponse{Acks: acks}, nil
 }
 
-// Get retrieves a value by key from the local store.
+// Get retrieves a value by key, routing to the correct node via the coordinator.
 func (s *KVServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
 	if req.GetKey() == "" {
 		return nil, status.Error(codes.InvalidArgument, "key must not be empty")
 	}
 
-	rec, err := s.store.Get(req.GetKey())
+	rec, err := s.coord.Get(ctx, req.GetKey())
 	if err != nil {
 		slog.Error("get failed", "key", req.GetKey(), "error", err)
 		return nil, status.Errorf(codes.Internal, "get failed: %v", err)
@@ -75,23 +73,23 @@ func (s *KVServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse
 	}, nil
 }
 
-// Delete removes a key from the local store (tombstone write).
+// Delete removes a key, routing to the correct node via the coordinator.
 func (s *KVServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
 	if req.GetKey() == "" {
 		return nil, status.Error(codes.InvalidArgument, "key must not be empty")
 	}
 
-	ts := time.Now().UnixNano()
-	if err := s.store.Delete(req.GetKey(), ts); err != nil {
+	deleted, err := s.coord.Delete(ctx, req.GetKey())
+	if err != nil {
 		slog.Error("delete failed", "key", req.GetKey(), "error", err)
 		return nil, status.Errorf(codes.Internal, "delete failed: %v", err)
 	}
 
-	slog.Debug("delete", "key", req.GetKey())
-	return &pb.DeleteResponse{Deleted: true}, nil
+	slog.Debug("delete", "key", req.GetKey(), "deleted", deleted)
+	return &pb.DeleteResponse{Deleted: deleted}, nil
 }
 
-// Status returns cluster status information. In Phase 1 this is just the local node.
+// Status returns cluster status information.
 func (s *KVServer) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
 	keyCount, err := s.store.KeyCount()
 	if err != nil {
