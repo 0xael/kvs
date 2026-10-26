@@ -9,11 +9,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
 	"github.com/alyelalwany/ghostkv/internal/config"
 	"github.com/alyelalwany/ghostkv/internal/coordinator"
+	"github.com/alyelalwany/ghostkv/internal/hintedhandoff"
 	"github.com/alyelalwany/ghostkv/internal/membership"
 	"github.com/alyelalwany/ghostkv/internal/ring"
 	"github.com/alyelalwany/ghostkv/internal/server"
@@ -91,6 +94,31 @@ func main() {
 	// Create the request coordinator.
 	coord := coordinator.New(*nodeID, hashRing, kvStore, mem, &cfg.Cluster)
 
+	// Graceful shutdown on SIGINT/SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Start the failure detector (probes peers via gRPC health checks).
+	detector := membership.NewDetector(mem, 2*time.Second, 1*time.Second)
+	go detector.Run(ctx)
+
+	// Create the hinted handoff store.
+	hintDBPath := filepath.Join(nodeCfg.DataDir, "hints.db")
+	hintStore, err := hintedhandoff.NewHintStore(hintDBPath, mem)
+	if err != nil {
+		slog.Error("failed to open hint store", "path", hintDBPath, "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := hintStore.Close(); err != nil {
+			slog.Error("failed to close hint store", "error", err)
+		}
+	}()
+	go hintStore.Run(ctx)
+
+	// Wire hint store to coordinator.
+	coord.SetHintStore(hintStore)
+
 	// Create gRPC server.
 	grpcServer := grpc.NewServer()
 
@@ -99,6 +127,7 @@ func main() {
 	pb.RegisterKVServiceServer(grpcServer, kvSrv)
 
 	intSrv := server.NewInternalServer(kvStore)
+	intSrv.SetHintStore(hintStore)
 	pb.RegisterInternalServiceServer(grpcServer, intSrv)
 
 	// Register gRPC health service.
@@ -120,10 +149,6 @@ func main() {
 		"cluster", cfg.Cluster.Name,
 		"ring_members", hashRing.Members(),
 	)
-
-	// Graceful shutdown on SIGINT/SIGTERM.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		<-ctx.Done()

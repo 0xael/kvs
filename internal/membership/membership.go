@@ -122,6 +122,18 @@ func (m *Membership) HealthyPeers() []string {
 	return ids
 }
 
+// PeerIDs returns the node IDs of all known peers (regardless of health).
+func (m *Membership) PeerIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ids := make([]string, 0, len(m.peers))
+	for id := range m.peers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Close shuts down all gRPC connections to peers.
 func (m *Membership) Close() error {
 	m.mu.Lock()

@@ -1,5 +1,7 @@
 // Package coordinator routes KV requests to the correct nodes in the cluster.
 // Phase 3: fan-out to N replicas with W/R quorum and read repair (LWW).
+// Phase 4: hinted handoff — failed writes are stored as hints and replayed
+// when the target node recovers.
 package coordinator
 
 import (
@@ -11,6 +13,7 @@ import (
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
 	"github.com/alyelalwany/ghostkv/internal/config"
+	"github.com/alyelalwany/ghostkv/internal/hintedhandoff"
 	"github.com/alyelalwany/ghostkv/internal/membership"
 	"github.com/alyelalwany/ghostkv/internal/store"
 	"google.golang.org/grpc/codes"
@@ -25,8 +28,15 @@ type Ring interface {
 	GetNodes(key string, n int) []string
 }
 
+// HintStore is the interface for storing hinted-handoff hints.
+// Using an interface allows tests to substitute a mock.
+type HintStore interface {
+	AddHint(hint *hintedhandoff.Hint) error
+}
+
 // Coordinator routes KV operations to the appropriate nodes based on the
 // consistent hash ring. Phase 3: fan-out to N replicas with quorum.
+// Phase 4: hinted handoff for failed writes.
 type Coordinator struct {
 	nodeID     string
 	ring       Ring
@@ -34,6 +44,7 @@ type Coordinator struct {
 	membership *membership.Membership
 	cfg        *config.ClusterSettings
 	logger     *slog.Logger
+	hintStore  HintStore // nil = no hinted handoff (backward compatible)
 }
 
 // New creates a Coordinator that routes requests using the given ring and
@@ -47,6 +58,11 @@ func New(nodeID string, ring Ring, s store.Store, m *membership.Membership, cfg 
 		cfg:        cfg,
 		logger:     slog.Default().With("component", "coordinator", "node", nodeID),
 	}
+}
+
+// SetHintStore sets the hint store for hinted handoff. Pass nil to disable.
+func (c *Coordinator) SetHintStore(hs HintStore) {
+	c.hintStore = hs
 }
 
 // writeResult captures the outcome of a single write (put/delete) to one node.
@@ -104,6 +120,11 @@ func (c *Coordinator) Put(ctx context.Context, key string, value []byte) (int32,
 			c.logger.Warn("put replica failed", "key", key, "node", res.nodeID, "error", res.err)
 			if firstErr == nil {
 				firstErr = res.err
+			}
+			// Store a hint for the failed remote node so the write can be
+			// replayed when the node recovers.
+			if res.nodeID != c.nodeID && c.hintStore != nil {
+				c.storeHint(res.nodeID, key, value, ts, false)
 			}
 		}
 	}
@@ -231,6 +252,10 @@ func (c *Coordinator) Delete(ctx context.Context, key string) (bool, error) {
 			if firstErr == nil {
 				firstErr = res.err
 			}
+			// Store a hint for the failed remote node (delete = tombstone).
+			if res.nodeID != c.nodeID && c.hintStore != nil {
+				c.storeHint(res.nodeID, key, nil, ts, true)
+			}
 		}
 	}
 
@@ -244,6 +269,32 @@ func (c *Coordinator) Delete(ctx context.Context, key string) (bool, error) {
 }
 
 // --- internal helpers ---
+
+// storeHint persists a hint for a failed write to the hint store.
+// Errors are logged but not propagated (hints are best-effort).
+func (c *Coordinator) storeHint(targetNodeID, key string, value []byte, ts int64, isDelete bool) {
+	hint := &hintedhandoff.Hint{
+		TargetNodeID: targetNodeID,
+		Key:          key,
+		Value:        value,
+		Timestamp:    ts,
+		IsDelete:     isDelete,
+		CreatedAt:    time.Now().UnixNano(),
+	}
+	if err := c.hintStore.AddHint(hint); err != nil {
+		c.logger.Error("failed to store hint",
+			"target", targetNodeID,
+			"key", key,
+			"error", err,
+		)
+	} else {
+		c.logger.Info("hint stored for offline node",
+			"target", targetNodeID,
+			"key", key,
+			"is_delete", isDelete,
+		)
+	}
+}
 
 // localPut writes a record to the local store.
 func (c *Coordinator) localPut(key string, value []byte, ts int64) error {
