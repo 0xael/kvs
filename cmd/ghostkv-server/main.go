@@ -13,6 +13,9 @@ import (
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
 	"github.com/alyelalwany/ghostkv/internal/config"
+	"github.com/alyelalwany/ghostkv/internal/coordinator"
+	"github.com/alyelalwany/ghostkv/internal/membership"
+	"github.com/alyelalwany/ghostkv/internal/ring"
 	"github.com/alyelalwany/ghostkv/internal/server"
 	"github.com/alyelalwany/ghostkv/internal/store"
 	"google.golang.org/grpc"
@@ -67,11 +70,32 @@ func main() {
 		}
 	}()
 
+	// Build the consistent hash ring with all nodes in the cluster.
+	hashRing := ring.New(cfg.Cluster.VirtualNodes)
+	for _, n := range cfg.Nodes {
+		hashRing.AddNode(n.ID)
+	}
+
+	// Create membership tracker (gRPC connections to all peers).
+	mem, err := membership.New(*nodeID, cfg)
+	if err != nil {
+		slog.Error("failed to create membership", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := mem.Close(); err != nil {
+			slog.Error("failed to close membership", "error", err)
+		}
+	}()
+
+	// Create the request coordinator.
+	coord := coordinator.New(*nodeID, hashRing, kvStore, mem, &cfg.Cluster)
+
 	// Create gRPC server.
 	grpcServer := grpc.NewServer()
 
 	// Register services.
-	kvSrv := server.NewKVServer(kvStore, cfg, *nodeID)
+	kvSrv := server.NewKVServer(coord, kvStore, cfg, *nodeID)
 	pb.RegisterKVServiceServer(grpcServer, kvSrv)
 
 	intSrv := server.NewInternalServer(kvStore)
@@ -94,6 +118,7 @@ func main() {
 		"node_id", *nodeID,
 		"address", listenAddr,
 		"cluster", cfg.Cluster.Name,
+		"ring_members", hashRing.Members(),
 	)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
