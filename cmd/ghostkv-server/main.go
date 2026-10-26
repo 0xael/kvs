@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
+	"github.com/alyelalwany/ghostkv/internal/antientropy"
 	"github.com/alyelalwany/ghostkv/internal/config"
 	"github.com/alyelalwany/ghostkv/internal/coordinator"
 	"github.com/alyelalwany/ghostkv/internal/membership"
@@ -124,6 +126,10 @@ func main() {
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Start the anti-entropy syncer in the background.
+	syncer := antientropy.NewSyncer(*nodeID, hashRing, kvStore, mem, 5*time.Minute)
+	go syncer.Run(ctx)
 
 	go func() {
 		<-ctx.Done()
