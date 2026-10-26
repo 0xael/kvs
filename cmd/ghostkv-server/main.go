@@ -14,6 +14,7 @@ import (
 	"time"
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
+	"github.com/alyelalwany/ghostkv/internal/antientropy"
 	"github.com/alyelalwany/ghostkv/internal/config"
 	"github.com/alyelalwany/ghostkv/internal/coordinator"
 	"github.com/alyelalwany/ghostkv/internal/hintedhandoff"
@@ -149,6 +150,11 @@ func main() {
 		"cluster", cfg.Cluster.Name,
 		"ring_members", hashRing.Members(),
 	)
+
+	// Start the anti-entropy syncer in the background.
+	syncer := antientropy.NewSyncer(*nodeID, hashRing, kvStore, mem, 5*time.Minute)
+	go syncer.Run(ctx)
+
 
 	go func() {
 		<-ctx.Done()

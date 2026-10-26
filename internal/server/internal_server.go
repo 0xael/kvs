@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pb "github.com/alyelalwany/ghostkv/gen/ghostkv/v1"
+	"github.com/alyelalwany/ghostkv/internal/antientropy"
 	"github.com/alyelalwany/ghostkv/internal/hintedhandoff"
 	"github.com/alyelalwany/ghostkv/internal/store"
 	"google.golang.org/grpc/codes"
@@ -93,4 +94,43 @@ func (s *InternalServer) HintedReplicate(ctx context.Context, req *pb.HintedRepl
 
 	slog.Debug("hinted_replicate", "target", req.GetTargetNodeId(), "key", req.GetKey(), "is_delete", req.GetIsDelete())
 	return &pb.HintedReplicateResponse{Success: true}, nil
+}
+
+// GetMerkleTree builds a Merkle tree from the local store for the
+// requested key range and depth, and returns it as a proto.
+func (s *InternalServer) GetMerkleTree(ctx context.Context, req *pb.MerkleTreeRequest) (*pb.MerkleTreeResponse, error) {
+	depth := int(req.GetDepth())
+	if depth <= 0 {
+		depth = 10 // default
+	}
+
+	tree, err := antientropy.BuildTree(s.store, req.GetKeyRangeStart(), req.GetKeyRangeEnd(), depth)
+	if err != nil {
+		slog.Error("build merkle tree failed", "error", err)
+		return nil, status.Errorf(codes.Internal, "build merkle tree: %v", err)
+	}
+
+	return &pb.MerkleTreeResponse{Root: tree.ToProto()}, nil
+}
+
+// SyncKeys returns all key-value entries in the requested range from
+// the local store.
+func (s *InternalServer) SyncKeys(ctx context.Context, req *pb.SyncKeysRequest) (*pb.SyncKeysResponse, error) {
+	var entries []*pb.KeyValueEntry
+
+	err := s.store.ForEachInRange(req.GetKeyRangeStart(), req.GetKeyRangeEnd(), func(key string, rec *store.Record) error {
+		entries = append(entries, &pb.KeyValueEntry{
+			Key:       key,
+			Value:     rec.Value,
+			Timestamp: rec.Timestamp,
+			IsDelete:  rec.IsDelete,
+		})
+		return nil
+	})
+	if err != nil {
+		slog.Error("sync keys failed", "error", err)
+		return nil, status.Errorf(codes.Internal, "sync keys: %v", err)
+	}
+
+	return &pb.SyncKeysResponse{Entries: entries}, nil
 }
