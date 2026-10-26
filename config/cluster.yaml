@@ -1,0 +1,17 @@
+cluster:
+  name: ghostkv-local
+  replication_factor: 3
+  write_quorum: 2
+  read_quorum: 2
+  virtual_nodes: 128
+
+nodes:
+  - id: node-1
+    address: "127.0.0.1:7001"
+    data_dir: "/tmp/ghostkv/node-1"
+  - id: node-2
+    address: "127.0.0.1:7002"
+    data_dir: "/tmp/ghostkv/node-2"
+  - id: node-3
+    address: "127.0.0.1:7003"
+    data_dir: "/tmp/ghostkv/node-3"

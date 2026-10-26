@@ -1,0 +1,78 @@
+syntax = "proto3";
+package ghostkv.v1;
+option go_package = "github.com/alyelalwany/ghostkv/gen/ghostkv/v1";
+
+message ReplicateRequest {
+  string key = 1;
+  bytes value = 2;
+  int64 timestamp = 3;
+  bool is_delete = 4;
+}
+
+message ReplicateResponse {
+  bool success = 1;
+}
+
+message HintedReplicateRequest {
+  string target_node_id = 1;
+  string key = 2;
+  bytes value = 3;
+  int64 timestamp = 4;
+  bool is_delete = 5;
+}
+
+message HintedReplicateResponse {
+  bool success = 1;
+}
+
+message MerkleTreeRequest {
+  string key_range_start = 1;
+  string key_range_end = 2;
+  int32 depth = 3;
+}
+
+message MerkleNode {
+  bytes hash = 1;
+  string range_start = 2;
+  string range_end = 3;
+  repeated MerkleNode children = 4;
+}
+
+message MerkleTreeResponse {
+  MerkleNode root = 1;
+}
+
+message SyncKeysRequest {
+  string key_range_start = 1;
+  string key_range_end = 2;
+}
+
+message KeyValueEntry {
+  string key = 1;
+  bytes value = 2;
+  int64 timestamp = 3;
+  bool is_delete = 4;
+}
+
+message SyncKeysResponse {
+  repeated KeyValueEntry entries = 1;
+}
+
+message DeliverHintRequest {
+  string key = 1;
+  bytes value = 2;
+  int64 timestamp = 3;
+  bool is_delete = 4;
+}
+
+message DeliverHintResponse {
+  bool success = 1;
+}
+
+service InternalService {
+  rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+  rpc HintedReplicate(HintedReplicateRequest) returns (HintedReplicateResponse);
+  rpc GetMerkleTree(MerkleTreeRequest) returns (MerkleTreeResponse);
+  rpc SyncKeys(SyncKeysRequest) returns (SyncKeysResponse);
+  rpc DeliverHint(DeliverHintRequest) returns (DeliverHintResponse);
+}
