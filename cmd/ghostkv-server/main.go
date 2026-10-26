@@ -54,16 +54,11 @@ func main() {
 		listenAddr = fmt.Sprintf(":%d", *port)
 	}
 
-	// Open the store.
-	// The bbolt implementation will be provided by another agent.
-	// For now, we declare the variable so the code compiles.
-	var kvStore store.Store
-	_ = nodeCfg.DataDir // will be used to open bbolt in the real implementation
-
-	// This is a compile-time placeholder; the real store.Open call will go here.
-	// TODO: kvStore, err = boltstore.Open(nodeCfg.DataDir)
-	if kvStore == nil {
-		slog.Error("store not initialized: bbolt implementation not yet available")
+	// Open the bbolt store.
+	dbPath := fmt.Sprintf("%s/ghostkv.db", nodeCfg.DataDir)
+	kvStore, err := store.NewBoltStore(dbPath)
+	if err != nil {
+		slog.Error("failed to open store", "path", dbPath, "error", err)
 		os.Exit(1)
 	}
 	defer func() {
