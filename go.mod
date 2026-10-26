@@ -3,6 +3,7 @@ module github.com/alyelalwany/ghostkv
 go 1.26.5
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0
 	google.golang.org/grpc v1.84.0
